@@ -7,7 +7,7 @@ DEBUG ?= 0
 
 ifeq ($(DEBUG), 1)
 	BUILD_MODE := debug
-	OUT_FILE := $(BUILD_DIR)/xslt-wasm-debug.js
+	OUT_FILE := $(BUILD_DIR)/xsltPolyfillWasmDebug.js
 	EMCC_OPT_LEVEL := -O0
 	EMCC_ASSERTIONS := -s ASSERTIONS=2
 	EMCC_SAFE_HEAP := -s SAFE_HEAP=1
@@ -15,7 +15,7 @@ ifeq ($(DEBUG), 1)
 	EMCC_DEBUG_FLAGS := -gsource-map
 else
 	BUILD_MODE := release
-	OUT_FILE := $(BUILD_DIR)/xslt-wasm.js
+	OUT_FILE := $(BUILD_DIR)/xsltPolyfillWasm.js
 	EMCC_OPT_LEVEL := -Os
 	EMCC_ASSERTIONS := -s ASSERTIONS=0
 	EMCC_SAFE_HEAP := -s SAFE_HEAP=0
@@ -67,17 +67,14 @@ $(OUT_FILE): src/transform.c $(XSLT_INSTALL_DIR)/lib/pkgconfig/libxslt.pc
 		-o $(OUT_FILE) \
 		`pkg-config --cflags libxml-2.0 libxslt libexslt` \
 		-s MODULARIZE \
-		-s SINGLE_FILE \
-		-s SINGLE_FILE_BINARY_ENCODE=1 \
+		-s EXPORT_ES6 \
 		-s ALLOW_MEMORY_GROWTH \
 		$(EMCC_SAFE_HEAP) \
 		$(EMCC_ASSERTIONS) \
 		-s INITIAL_MEMORY=32MB \
 		-s STACK_SIZE=5MB \
-		-s EXPORT_NAME=createXSLTTransformModule \
 		-s EXPORTED_FUNCTIONS=_transform,_malloc,_free,Asyncify \
 		-s EXPORTED_RUNTIME_METHODS=cwrap,UTF8ToString,wasmMemory,Asyncify,stringToNewUTF8 \
-		-s WASM_ASYNC_COMPILATION=0 \
 		-s ASYNCIFY \
 		$(EMCC_ASYNCIFY_DEBUG) \
 		-s ASYNCIFY_IMPORTS=fetch_and_load_document \
@@ -87,7 +84,7 @@ $(OUT_FILE): src/transform.c $(XSLT_INSTALL_DIR)/lib/pkgconfig/libxslt.pc
 	@echo "--- $(OUT_FILE) (embedded WASM) ---"
 
 clean:
-	rm -f $(BUILD_DIR)/xslt-wasm.js $(BUILD_DIR)/xslt-wasm-debug.js
+	rm -f $(BUILD_DIR)/xsltPolyfillWasm.js
 
 clean-libs:
 	rm -rf $(BUILD_DIR)
