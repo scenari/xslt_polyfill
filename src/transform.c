@@ -1,4 +1,6 @@
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Emscripten header for exporting functions
@@ -7,6 +9,7 @@
 // Libxml2 and Libxslt headers
 #include <libexslt/exslt.h>
 #include <libxml/parser.h>
+#include <libxml/parserInternals.h>
 #include <libxml/tree.h>
 #include <libxml/xmlstring.h>
 #include <libxml/xpath.h>
@@ -22,25 +25,116 @@
 #include <libxslt/xsltutils.h>
 
 // Forward declaration for our JS fetch function.
-const char *fetch_and_load_document(const char *url);
+const char *fetch_and_load_document(const char *url, int is_stylesheet);
+
+// Logs a message to the console at the given xmlErrorLevel, prefixed with
+// "file:line: " if a file is given.
+EM_JS(void, log_to_console, (int level, const char *message, const char *file, int line), {
+  var text = UTF8ToString(message).trimEnd();
+  if (file) {
+    text = UTF8ToString(file) + ':' + line + ': ' + text;
+  }
+  if (level === 0 /* XML_ERR_NONE */) {
+    console.debug(text);
+  } else if (level === 1 /* XML_ERR_WARNING */) {
+    console.warn(text);
+  } else {
+    console.error(text);
+  }
+});
+
+// Like Chrome, log libxml2's structured errors (e.g. parse errors) to the
+// console at their own level.
+static void log_structured_error(void *ctx, const xmlError *error) {
+  if (error && error->message) {
+    log_to_console(error->level, error->message, error->file, error->line);
+  }
+}
+
+// libxslt reports warnings (e.g. for version="2.0" stylesheets), errors, and
+// xsl:message output through the generic error handlers. Native XSLT doesn't
+// log these, so buffer them, and only log them if the transformation fails.
+static char *generic_errors = NULL;
+static size_t generic_errors_len = 0;
+
+static void buffer_generic_error(void *ctx, const char *msg, ...) {
+  va_list args;
+  va_start(args, msg);
+  int len = vsnprintf(NULL, 0, msg, args);
+  va_end(args);
+  if (len <= 0) {
+    return;
+  }
+  char *grown = realloc(generic_errors, generic_errors_len + len + 1);
+  if (!grown) {
+    return;
+  }
+  generic_errors = grown;
+  va_start(args, msg);
+  vsnprintf(generic_errors + generic_errors_len, len + 1, msg, args);
+  va_end(args);
+  generic_errors_len += len;
+}
 
 // Use EM_JS to define a JavaScript function that can be called from C.
 // This function will use the fetch API to get a document from a URL.
 // It uses Asyncify to pause the C code and wait for the async JS to complete.
-EM_JS(const char *, fetch_and_load_document, (const char *url), {
+// For stylesheet loads (xsl:import/xsl:include), a stylesheet that was already
+// fetched and preprocessed by compileImports (in xslt-polyfill-src.js) is used
+// instead of fetching it again.
+EM_JS(const char *, fetch_and_load_document, (const char *url, int is_stylesheet), {
   return Asyncify.handleSleep(function(wakeUp) {
-    fetch(UTF8ToString(url))
+    var urlStr = UTF8ToString(url);
+    var preprocessed = null;
+    Promise.resolve()
+        .then(function() {
+          var resolved = new URL(urlStr, window.location.href);
+          if (resolved.protocol === 'data:') {
+            throw new Error('data: URLs are not allowed');
+          }
+          if (window.location.origin === 'null') {
+            if (window.location.protocol !== 'file:' ||
+                resolved.protocol !== 'file:') {
+              throw new Error('Cross-origin URLs are not allowed');
+            }
+          } else if (resolved.origin !== window.location.origin) {
+            throw new Error('Cross-origin URLs are not allowed');
+          }
+          var stylesheets = Module['preprocessedStylesheets'];
+          if (is_stylesheet && stylesheets && stylesheets.has(resolved.href)) {
+            preprocessed = stylesheets.get(resolved.href);
+            return null;
+          }
+          return fetch(resolved.href, {mode : 'same-origin'});
+        })
         .then(function(response) {
+          if (preprocessed !== null) {
+            return preprocessed;
+          }
           if (!response.ok) {
-            // Wake up the C code with a null pointer to indicate failure.
-            wakeUp(null);
-            return;
+            return null;
+          }
+          if (response.url) {
+            var finalUrl = new URL(response.url, window.location.href);
+            if (finalUrl.protocol === 'data:' ||
+                (window.location.origin !== 'null' &&
+                 finalUrl.origin !== window.location.origin)) {
+              return null;
+            }
+          }
+          // Decode the document in its own encoding (see decodeXmlBytes in
+          // xslt-polyfill-src.js). Response.text() always decodes as UTF-8.
+          if (Module['decodeXmlBytes']) {
+            return response.arrayBuffer().then(function(buffer) {
+              return Module['decodeXmlBytes'](new Uint8Array(buffer),
+                                              response.headers.get('Content-Type'));
+            });
           }
           return response.text();
         })
         .then(function(text) {
           if (text === null) {
-            wakeUp(null);
+            wakeUp(0);
             return;
           }
           // Allocate memory in the WASM heap for the fetched text
@@ -51,15 +145,10 @@ EM_JS(const char *, fetch_and_load_document, (const char *url), {
         .catch(function(err) {
           console.error(
               "XSLT Polyfill: Failed to fetch an external document included " +
-              "via <xsl:import> or <xsl:include>.\n" +
-              "URL: " + UTF8ToString(url) + "\n" +
-              "This is often due to the browser's CORS (Cross-Origin Resource " +
-              "Sharing) policy. " +
-              "This polyfill uses the standard `fetch()` API, which is more " +
-              "restrictive than a native browser's XSLT engine. " +
-              "Please check the browser's network console for more details " +
-              "about the failed request.");
-          wakeUp(null);
+              "via <xsl:import>, <xsl:include>, or document().\n" +
+              "URL: " + urlStr + "\n" +
+              "External documents must be same-origin and may not use data: URLs.");
+          wakeUp(0);
         });
   });
 });
@@ -244,6 +333,11 @@ static void xslt_polyfill_sort_function(xsltTransformContextPtr ctxt,
   if ((list == NULL) || (list->nodeNr <= 1)) {
     return;
   }
+
+  // Clear JS string cache used for sorting so that recycled heap pointer
+  // addresses from prior sorts do not return stale cached strings.
+  clear_collate_cache();
+
   for (j = 0; j < nbsorts; j++) {
     xmlChar *evaluated_lang;
     comp = (const xsltStylePreComp *)sorts[j]->psvi;
@@ -375,7 +469,7 @@ cleanup:
  * to get the content from the URL and then parses it into an xmlDocPtr.
  *
  * @param URI The URI of the document to load.
- * @param dict A dictionary for interning strings (not used).
+ * @param dict The dictionary to use when parsing the document.
  * @param options Parser options.
  * @param ctxt The transformation context (not used).
  * @param type The type of load (document or stylesheet).
@@ -400,14 +494,30 @@ static xmlDocPtr docLoader(const xmlChar *URI, xmlDictPtr dict, int options,
   }
 
   printf("Loading external document from URL %s...\n", url);
-  const char *content = fetch_and_load_document(url);
+  const char *content =
+      fetch_and_load_document(url, type == XSLT_LOAD_STYLESHEET);
   printf("Done loading %s.\n", url);
 
   if (content == NULL) {
     return NULL;
   }
 
-  xmlDocPtr doc = xmlReadMemory(content, strlen(content), url, "UTF-8", XML_PARSE_HUGE);
+  // Parse using the supplied dictionary, as xsltDocDefaultLoaderFunc does.
+  // libxslt compares interned names by pointer (e.g. matching xsl:with-param
+  // to xsl:param), and an imported stylesheet adopts its document's dict, so
+  // parsing with a separate dict makes those comparisons fail.
+  xmlDocPtr doc = NULL;
+  xmlParserCtxtPtr pctxt = xmlNewParserCtxt();
+  if (pctxt) {
+    if (dict) {
+      xmlDictFree(pctxt->dict);
+      pctxt->dict = dict;
+      xmlDictReference(dict);
+    }
+    doc = xmlCtxtReadMemory(pctxt, content, strlen(content), url, "UTF-8",
+                            XML_PARSE_HUGE);
+    xmlFreeParserCtxt(pctxt);
+  }
   if (!doc) {
     printf("XSLT Transformation Error: Failed to parse included document.\n");
   }
@@ -523,6 +633,72 @@ static void adjust_html_encoding_meta(xmlDocPtr doc, xsltStylesheetPtr style) {
   }
 }
 
+// In libxml2's HTML serializer (htmlNodeDumpInternal in HTMLtree.c), entering
+// a raw-text element like <script> or <style> sets `isRaw = 1`, but finishing
+// any child element inside it (e.g. an unescaped <div> inside a JS template
+// literal in <script>) unconditionally resets `isRaw = 0` for all subsequent
+// sibling text nodes of the <script>. Mark text nodes inside HTML <script> and
+// <style> elements with `xmlStringTextNoenc` so libxml2 keeps writing them
+// unescaped.
+static void mark_raw_text_descendants(xmlNodePtr root) {
+  xmlNodePtr cur = root->children;
+  while (cur != NULL) {
+    if (cur->type == XML_TEXT_NODE) {
+      cur->name = xmlStringTextNoenc;
+    }
+    if (cur->children != NULL) {
+      cur = cur->children;
+      continue;
+    }
+    while (cur != root) {
+      if (cur->next != NULL) {
+        cur = cur->next;
+        break;
+      }
+      cur = cur->parent;
+    }
+    if (cur == root)
+      break;
+  }
+}
+
+static void preserve_html_raw_text_elements(xmlDocPtr doc,
+                                            xsltStylesheetPtr style) {
+  const xmlChar *method;
+  XSLT_GET_IMPORT_PTR(method, style, method);
+
+  if ((method == NULL) && (doc->type == XML_HTML_DOCUMENT_NODE))
+    method = (const xmlChar *)"html";
+
+  if (method == NULL || !xmlStrEqual(method, (const xmlChar *)"html")) {
+    return;
+  }
+
+  xmlNodePtr cur = doc->children;
+  while (cur != NULL) {
+    if (cur->type == XML_ELEMENT_NODE && cur->ns == NULL &&
+        cur->name != NULL &&
+        (xmlStrcasecmp(cur->name, (const xmlChar *)"script") == 0 ||
+         xmlStrcasecmp(cur->name, (const xmlChar *)"style") == 0)) {
+      mark_raw_text_descendants(cur);
+    } else if (cur->children != NULL) {
+      cur = cur->children;
+      continue;
+    }
+    while (cur != NULL) {
+      if (cur->next != NULL) {
+        cur = cur->next;
+        break;
+      }
+      cur = cur->parent;
+      if (cur == (xmlNodePtr)doc) {
+        cur = NULL;
+        break;
+      }
+    }
+  }
+}
+
 /**
  * @brief Transforms an XML string using an XSLT string.
  *
@@ -566,6 +742,12 @@ char *transform(const char *xml_content, int xml_len, const char *xslt_content,
 
   // Set our custom document loader.
   xsltSetLoaderFunc(docLoader);
+
+  // Set our error handlers.
+  generic_errors_len = 0;
+  xmlSetStructuredErrorFunc(NULL, log_structured_error);
+  xmlSetGenericErrorFunc(NULL, buffer_generic_error);
+  xsltSetGenericErrorFunc(NULL, buffer_generic_error);
 
   // Parse the input strings into libxml2 documents using their known length.
   xml_doc = xmlReadMemory(xml_content, xml_len, "xml", "UTF-8", XML_PARSE_HUGE);
@@ -653,22 +835,23 @@ char *transform(const char *xml_content, int xml_len, const char *xslt_content,
   strncpy(out_mime_type, mime, 32);
   out_mime_type[31] = '\0';
 
-  // 6. Ensure the HTML meta tag for encoding is in the Chrome/Blink format.
+  // 6. Ensure the HTML meta tag for encoding is in the Chrome/Blink format,
+  // and preserve raw text inside HTML <script> and <style> elements.
   adjust_html_encoding_meta(result_doc, xslt_sheet);
+  preserve_html_raw_text_elements(result_doc, xslt_sheet);
 
-  // 7. Serialize the result document to a string.
+  // 7. Serialize the result document to a string. Like Chromium, use an
+  // output buffer with no encoder, so the result is always UTF-8. (The JS side
+  // decodes it as UTF-8.) xsltSaveResultToString() would instead convert the
+  // result to the <xsl:output encoding>, e.g. windows-1255.
   xmlChar *result_buffer = NULL;
-  int result_len = 0;
-  int bytes_written = xsltSaveResultToString(&result_buffer, &result_len,
-                                             result_doc, xslt_sheet);
-
-  if (bytes_written == 0 && result_buffer == NULL) {
-    // If the output is empty, xsltSaveResultToString might return success (0)
-    // but not allocate a buffer. We need to return an empty string, not NULL.
-    result_buffer = (xmlChar *)malloc(1);
-    if (result_buffer) {
-      result_buffer[0] = '\0';
-    }
+  xmlOutputBufferPtr output_buf = xmlAllocOutputBuffer(NULL);
+  if (output_buf) {
+    xsltSaveResultTo(output_buf, result_doc, xslt_sheet);
+    // This is an empty string (not NULL) if there was no output.
+    result_buffer = xmlStrndup(xmlOutputBufferGetContent(output_buf),
+                               (int)xmlOutputBufferGetSize(output_buf));
+    xmlOutputBufferClose(output_buf);
   }
 
   if (!result_buffer) {
@@ -695,6 +878,18 @@ cleanup:
 
   // Unset the loader function.
   xsltSetLoaderFunc(NULL);
+
+  // Log the buffered messages if the transformation failed, and unset the
+  // error handlers.
+  if (!result_string && generic_errors_len > 0) {
+    log_to_console(XML_ERR_ERROR, generic_errors, NULL, 0);
+  }
+  free(generic_errors);
+  generic_errors = NULL;
+  generic_errors_len = 0;
+  xmlSetStructuredErrorFunc(NULL, NULL);
+  xmlSetGenericErrorFunc(NULL, NULL);
+  xsltSetGenericErrorFunc(NULL, NULL);
 
   // Return the allocated string (or NULL on failure).
   return result_string;

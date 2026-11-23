@@ -48,6 +48,13 @@ XSLT polyfill, and replace the page with the result of the transformation.
 The example above is available in the `test/` folder of this repo:
 [`demo.xml`](https://github.com/mfreed7/xslt_polyfill/blob/main/test/demo.xml).
 
+Note that a browser that still has native XSLT support enabled will transform this
+document natively, before any script in it can run. The `<script>` elements
+are just input to the native transform, so the polyfill never executes, and no
+flag set in the source XML can change that. This automatic transformation
+therefore only uses the polyfill in browsers without native XSLT support. See
+[Limitations](#limitations).
+
 The polyfill also provides a full implementation of the `XSLTProcessor` class,
 so that code like this will also work:
 
@@ -63,6 +70,70 @@ xsltProcessor.transformToFragment(xmlDoc, document);
 
 The example above is available in the `test/` folder of this repo:
 [`XSLTProcessor_example.html`](https://github.com/mfreed7/xslt_polyfill/blob/main/test/XSLTProcessor_example.html).
+
+## Skipping the Polyfill
+
+By default, the polyfill installs itself unconditionally, replacing
+`window.XSLTProcessor` even in browsers that have working native XSLT support.
+
+To only install the polyfill when it is actually needed (i.e. when
+`window.XSLTProcessor` is missing, isn't native code, or can't be
+constructed), set `window.xsltUsePolyfillOnlyIfNeeded` to `true` *before* the
+polyfill script runs:
+
+```html
+<!DOCTYPE html>
+<script>window.xsltUsePolyfillOnlyIfNeeded = true;</script>
+<script src="xslt-polyfill.min.js" charset="utf-8"></script>
+```
+
+The same works in an XML document, as long as the `<script>` elements are in
+the XHTML namespace:
+
+```xml
+<script xmlns="http://www.w3.org/1999/xhtml">window.xsltUsePolyfillOnlyIfNeeded = true;</script>
+<script src="../xslt-polyfill.min.js" xmlns="http://www.w3.org/1999/xhtml"></script>
+```
+
+Notes:
+
+- The flag is read once, when the polyfill script executes. Setting it
+  afterwards has no effect.
+- When the polyfill script executes, it sets `window.xsltPolyfillInstalled = true`
+  and `window.xsltPolyfillVersion` to the package version string (e.g. `'1.0.32'`).
+- When installed, the polyfill replaces `window.XSLTProcessor` with its own
+  implementation and exposes its helper functions
+  (`xsltPolyfillReady()`, `loadXmlWithXsltFromUrl()`,
+  `parseAndReplaceCurrentXMLDoc()`, etc.).
+- This also applies to the automatic transformation of an XML document
+  containing an `<?xml-stylesheet?>` processing instruction: the polyfill
+  performs that transformation even in a browser with native XSLT support.
+  However, if the browser has native XSLT support, it will already have
+  transformed a navigated XML document natively before the polyfill script
+  gets a chance to run (see [Limitations](#limitations)). Use
+  `window.xsltDontAutoloadXmlDocs = true` to suppress the automatic
+  transformation.
+
+## Setting Options Without Globals
+
+Code that wraps the polyfill in a function, such as a browser extension's
+content script, can declare an `xsltPolyfillOptions` object in the enclosing
+scope instead of setting the `window.*` flags. The polyfill then reads
+`xsltUsePolyfillOnlyIfNeeded`, `xsltDontAutoloadXmlDocs`, and
+`xsltPolyfillQuiet` from that object. If `xsltUsePolyfillOnlyIfNeeded` is true
+there and the browser has native XSLT support, the polyfill returns without
+touching the page: it sets no globals, including `xsltPolyfillInstalled`.
+
+```js
+(() => {
+  const xsltPolyfillOptions = {
+    xsltUsePolyfillOnlyIfNeeded: true,
+    xsltDontAutoloadXmlDocs: true,
+    xsltPolyfillQuiet: true,
+  };
+  // ...contents of xslt-polyfill.min.js...
+})();
+```
 
 ## Loading Spinner
 
@@ -113,44 +184,61 @@ standards-compliant XSLT 1.0 engine.
   document's content with the result.
 - **Resource Fetching**: All external resources, including the XSLT itself and
   any files referenced via `<xsl:import>`, `<xsl:include>`, or `document()`, are
-  fetched using the `fetch()` API and are thus subject to CORS. The source
-  document is re-fetched to ensure the WebAssembly engine receives the clean,
-  original byte stream, avoiding any modifications or tag stripping introduced
-  by the browser's initial XML parsing.
+  fetched using the `fetch()` API in `same-origin` mode (cross-origin and
+  `data:` URLs are blocked, even with CORS headers, matching Chrome's native
+  XSLT behavior). The source document is re-fetched to ensure the WebAssembly
+  engine receives the clean, original byte stream, avoiding any modifications or
+  tag stripping introduced by the browser's initial XML parsing.
 - **Script Execution**: To ensure functionality in the transformed output, the
   polyfill manually re-creates and executes `<script>` elements and fires
   synthetic `DOMContentLoaded` and `load` events.
-- **MIME Types & Namespaces**: Stylesheets must use `type="text/xsl"` or
-  `type="application/xslt+xml"`. Because the underlying document remains an
-  XML/XHTML document, the polyfill monkey-patches `document.createElement` to
-  ensure new elements are created in the XHTML namespace.
+- **MIME Types & Namespaces**: Stylesheets must use `type="text/xsl"`,
+  `type="application/xslt+xml"`, `type="text/xml"`, or `type="application/xml"`,
+  and `alternate="yes"` stylesheets are skipped. Because the underlying
+  document remains an XML/XHTML document, the polyfill monkey-patches
+  `document.createElement` to ensure new elements are created in the XHTML
+  namespace.
 
 ## Limitations
 
 Note that as of now, there are a few things that don't work perfectly:
- - You'll need to be running the polyfill in a browser with the native XSLT
-   feature disabled. In Chrome, you can do this at `chrome://flags/#xslt`.
+ - For the *automatic* transformation of an XML document, you'll need to be
+   running the polyfill in a browser with the native XSLT feature disabled. In
+   Chrome, you can do this at `chrome://flags/#xslt`. The `XSLTProcessor` API
+   always uses the polyfill by default, see
+   [Skipping the Polyfill](#skipping-the-polyfill).
  - The `parseAndReplaceCurrentXMLDoc()` function will replace the contents of
    the *current* document (an `XHTML` document) with the transformed content.
    Because XHTML always renders in no-quirks mode, if the transformed (HTML)
    output content *doesn't* include a `<!DOCTYPE>`, then it ordinarily would
    have rendered in quirks mode, which is different.
+ - For the same reason, the transformed content stays in an XML document, so
+   CSS selectors match element and attribute names case-sensitively
+   (`BODY { ... }` doesn't match `<body>`, as it would in an HTML document),
+   DOM methods like `getElementsByTagName('P')` and `getAttribute('CLASS')`
+   are case-sensitive too, and `document.write()` throws.
  - Scripts in the transformed output must be "copied" to fresh `<script>`
    elements so that they execute. This means the behavior will be slightly
    different from native: all (legacy synchronous) scripts will see the full
    DOM, not just the DOM "above" the script. Also, a synthetic `load` event
    will be fired after all scripts are inserted, since no trusted load will be
    fired either.
+ - The transformation happens asynchronously, after the document has loaded.
+   So when an XML document is transformed in an `<iframe>`, the frame's `load`
+   event fires before the transformation is done, and a parent's
+   `iframe.onload` handler sees the untransformed XML document (e.g. its
+   `contentDocument.body` is `null`). Natively, the transformed document is
+   already in place when `load` fires.
  - Because the transformed HTML content can contain `<script>`'s, and those
    scripts likely expect the document to be an HTML document, and not the XML
    document mentioned above, some things need to be monkeypatched by this
    polyfill. For example, `document.createElement()` is patched so that it
    creates elements in the XHTML namespace.
- - Since the polyfill uses the Fetch API to request any additional resources
-   linked via `<xsl:include>` or `<xsl:import>` in the XML source, these
-   requests are subject to CORS, which might block the request. The browser-
-   native XSLT processor is able to load these resources, despite the CORS
-   violation, leading to a behavior difference.
+ - The polyfill uses the Fetch API in `same-origin` mode to request stylesheets
+   and any additional resources linked via `<xsl:include>`, `<xsl:import>`, or
+   `document()`. Cross-origin and `data:` URLs are blocked (even if CORS headers
+   are present). This matches Chrome's native XSLT processor, though some other
+   browsers (such as Firefox) allow CORS-enabled cross-origin XSLT resources.
  - Similarly, since fetch() needs to be used for included/imported resources,
    and the fetch API is asynchronous, the (synchronous) XSLTProcessor methods
    will fail in this case. I don't have a great solution for this, other than
@@ -158,6 +246,11 @@ Note that as of now, there are a few things that don't work perfectly:
  - The Wasm code is embedded into a single file, for ease-of-use and file size,
    via the emcc SINGLE_FILE option. This means that the encoding must be UTF-8
    or that resource will be incorrectly decoded.
+ - The Wasm module is compiled in the page, so a Content Security Policy whose
+   `script-src` doesn't allow `'wasm-unsafe-eval'` blocks it: the
+   `xsltPolyfillReady()` promise rejects and the `XSLTProcessor` methods
+   throw, even though native XSLT would work. The module is only loaded when
+   XSLT is first used, so pages that don't use XSLT aren't affected.
  - There are likely opportunities for performance improvement. In particular,
    there are a few places where the content takes extra passes through a
    parser, and those could likely be streamlined.

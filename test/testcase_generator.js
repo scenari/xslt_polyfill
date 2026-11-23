@@ -100,6 +100,126 @@ const testCases = [
         </xsl:stylesheet>`,
   },
   {
+    name: 'createElement and style in XML document',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+            <xsl:output method="html"/>
+            <xsl:template match="/">
+                <body>
+                    <script>
+                        // 1. Test Document.prototype.createElement
+                        const div1 = Document.prototype.createElement.call(document, 'div');
+                        const p1 = (div1.namespaceURI === 'http://www.w3.org/1999/xhtml' &amp;&amp; div1.style !== undefined);
+
+                        // 2. Test document.createElementNS with null namespace
+                        const div2 = document.createElementNS(null, 'div');
+                        const p2 = (div2.namespaceURI === null);
+
+                        // 3. Test innerHTML on an XML container element
+                        const xmlContainer = document.createElementNS(null, 'container');
+                        xmlContainer.innerHTML = '&lt;div class="leaflet-pane"&gt;&lt;/div&gt;';
+                        const div3 = xmlContainer.firstElementChild;
+                        const p3 = (div3 &amp;&amp; div3.namespaceURI === 'http://www.w3.org/1999/xhtml' &amp;&amp; div3.style !== undefined);
+
+                        if (p1 &amp;&amp; p2 &amp;&amp; p3) {
+                            const target = document.createElement('div');
+                            target.id = 'target';
+                            target.style.color = 'green';
+                            target.textContent = 'PASS';
+                            document.body.appendChild(target);
+                        } else {
+                            const target = document.createElement('div');
+                            target.id = 'target';
+                            target.style.color = 'red';
+                            target.textContent = \`FAIL: p1=\${p1}, p2=\${p2}, p3=\${p3}\`;
+                            document.body.appendChild(target);
+                        }
+                    </script>
+                </body>
+            </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'XML documents keep spec DOM behavior',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+            <xsl:output method="html"/>
+            <xsl:template match="/">
+                <body>
+                    <script>
+                        // Per https://dom.spec.whatwg.org/#dom-document-createelement,
+                        // createElement() only ASCII-lowercases localName when the
+                        // document is an HTML document, and only uses the HTML
+                        // namespace for HTML documents (or content type
+                        // application/xhtml+xml). XML is case sensitive, so an
+                        // XMLDocument created by the page must be left alone by the
+                        // polyfill.
+                        const xdoc = document.implementation.createDocument('', '', null);
+                        const el = xdoc.createElement('CreateUser');
+                        const p1 = el.localName === 'CreateUser' &amp;&amp; el.tagName === 'CreateUser' &amp;&amp; el.nodeName === 'CreateUser';
+                        const p2 = el.namespaceURI === null;
+                        const p3 = new XMLSerializer().serializeToString(el) === '&lt;CreateUser/&gt;';
+
+                        // Case must also survive parsing and tree building.
+                        const parsed = new DOMParser().parseFromString('&lt;Root&gt;&lt;Child/&gt;&lt;/Root&gt;', 'application/xml');
+                        const p4 = parsed.documentElement.tagName === 'Root' &amp;&amp;
+                            parsed.documentElement.firstElementChild.tagName === 'Child';
+
+                        xdoc.appendChild(el);
+                        el.appendChild(xdoc.createElement('Inner'));
+                        const p5 = el.firstElementChild.tagName === 'Inner' &amp;&amp;
+                            new XMLSerializer().serializeToString(xdoc) === '&lt;CreateUser&gt;&lt;Inner/&gt;&lt;/CreateUser&gt;';
+
+                        // ...while the polyfilled document still behaves like an HTML document.
+                        const div = document.createElement('DIV');
+                        const p6 = div.localName === 'div' &amp;&amp; div.tagName === 'DIV' &amp;&amp;
+                            div.namespaceURI === 'http://www.w3.org/1999/xhtml';
+
+                        const target = document.createElement('div');
+                        target.id = 'target';
+                        const passed = p1 &amp;&amp; p2 &amp;&amp; p3 &amp;&amp; p4 &amp;&amp; p5 &amp;&amp; p6;
+                        target.style.color = passed ? 'green' : 'red';
+                        target.textContent = passed ? 'PASS' :
+                            'FAIL: p1=' + p1 + ', p2=' + p2 + ', p3=' + p3 + ', p4=' + p4 + ', p5=' + p5 + ', p6=' + p6;
+                        document.body.appendChild(target);
+                    </script>
+                </body>
+            </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'XML document created from HTML page',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target">INIT</div>
+        <script>
+        window.onload = () => {
+            ${UTILITIES}
+            // Loading the polyfill into an HTML page must not change how
+            // XMLDocuments created by that page behave.
+            const xdoc = document.implementation.createDocument('', '', null);
+            const el = xdoc.createElement('CreateUser');
+            const p1 = el.localName === 'CreateUser' && el.tagName === 'CreateUser' && el.namespaceURI === null;
+            const div = document.createElement('DIV');
+            const p2 = div.localName === 'div' && div.tagName === 'DIV';
+            setResult(p1 && p2, 'p1=' + p1 + ', p2=' + p2);
+        };
+        </script>
+        </body>`,
+  },
+  {
     name: "document('') Functionality",
     xml: `<?xml version="1.0"?>
         <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
@@ -228,6 +348,49 @@ const testCases = [
             setResult(fragment === '<title>PASS</title><div>PASS</div>' &&
                       doc === '<html><head><title>PASS</title></head><body><div>PASS</div></body></html>');
         };
+        </script>`,
+  },
+  {
+    name: 'Wasm module loads on first use',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        <script>
+            // Count Wasm instantiations, to check that the polyfill doesn't
+            // load its Wasm module until it's needed.
+            window.wasmInstantiations = 0;
+            WebAssembly.Instance = new Proxy(WebAssembly.Instance, {
+                construct(target, args) {
+                    window.wasmInstantiations++;
+                    return Reflect.construct(target, args);
+                },
+            });
+            for (const name of ['instantiate', 'instantiateStreaming']) {
+                const original = WebAssembly[name];
+                WebAssembly[name] = function (...args) {
+                    window.wasmInstantiations++;
+                    return original.apply(this, args);
+                };
+            }
+        </script>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        window.onload = () => setTimeout(() => {
+            const before = window.wasmInstantiations;
+            const xml = \`<page>PASS</page>\`;
+            const xsl = \`<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                <xsl:template match="/"><div><xsl:value-of select="page"/></div></xsl:template>
+                </xsl:stylesheet>\`;
+            ${UTILITIES}
+            // No xsltPolyfillReady(): the synchronous methods should load the module.
+            const {xsltProcessor,xmlDoc} = initProcessor(xml,xsl);
+            const fragment = toFlatString(xsltProcessor.transformToFragment(xmlDoc, document));
+            const after = window.wasmInstantiations;
+            const loadedOnFirstUse = !window.xsltPolyfillVersion || (before === 0 && after === 1);
+            setResult(fragment === '<div>PASS</div>' && loadedOnFirstUse,
+                'fragment=' + fragment + ', instantiations before=' + before + ', after=' + after);
+        }, 100);
         </script>`,
   },
   {
@@ -585,6 +748,60 @@ const testCases = [
         </body>`,
   },
   {
+    name: 'Multiple Sequential Sorts Cache Stability',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        window.onload = () => {
+            const xml = \`<?xml version="1.0" encoding="utf-8"?>
+                <root>
+                    <group id="1">
+                        <item>Item CCC Long Name</item>
+                        <item>Item AAA Long Name</item>
+                        <item>Item BBB Long Name</item>
+                    </group>
+                    <group id="2">
+                        <item>Item FFF Long Name</item>
+                        <item>Item DDD Long Name</item>
+                        <item>Item EEE Long Name</item>
+                    </group>
+                </root>\`;
+            const xsl = \`<?xml version="1.0" encoding="utf-8"?>
+                <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
+                    <xsl:output method="text" encoding="UTF-8"/>
+                    <xsl:template match="/">
+                        <xsl:for-each select="root/group[@id='1']/item">
+                            <xsl:sort select="."/>
+                            <xsl:value-of select="."/>
+                            <xsl:text>,</xsl:text>
+                        </xsl:for-each>
+                        <xsl:text>|</xsl:text>
+                        <xsl:for-each select="root/group[@id='2']/item">
+                            <xsl:sort select="."/>
+                            <xsl:value-of select="."/>
+                            <xsl:text>,</xsl:text>
+                        </xsl:for-each>
+                    </xsl:template>
+                </xsl:stylesheet>\`;
+            ${UTILITIES}
+            const {xsltProcessor,xmlDoc} = initProcessor(xml,xsl);
+            const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+            const result = fragment.textContent.trim();
+            const expected = "Item AAA Long Name,Item BBB Long Name,Item CCC Long Name,|Item DDD Long Name,Item EEE Long Name,Item FFF Long Name,";
+            
+            if (result === expected) {
+                setResult(true);
+            } else {
+                setResult(false, 'Expected ' + JSON.stringify(expected) + ' but got ' + JSON.stringify(result));
+            }
+        };
+        </script>
+        </body>`,
+  },
+  {
     name: 'Load and DOMContentLoaded Events',
     xml: `<?xml version="1.0" encoding="UTF-8"?>
         <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
@@ -598,6 +815,38 @@ const testCases = [
             <body>
                 <div id="target" style="color:red">INIT</div>
                 <script>
+                    const events = {};
+                    const check = (e) => {
+                        events[e.type] = true;
+                        if (events['load'] &amp;&amp; events['DOMContentLoaded']) {
+                            const div = document.getElementById('target');
+                            div.style.color = 'green';
+                            div.textContent = 'PASS';
+                        }
+                    };
+                    window.addEventListener('load', check);
+                    document.addEventListener('DOMContentLoaded', check);
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Load and DOMContentLoaded Events with page-replaced Event',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    // Libraries like MooTools 1.2 replace the global Event.
+                    var Event = function (e) { this.type = e.type; };
                     const events = {};
                     const check = (e) => {
                         events[e.type] = true;
@@ -659,6 +908,9 @@ const testCases = [
   },
   {
     name: 'Import Attribute Merge',
+    extraFiles: {
+      'Import_Attribute_Merge_imported.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" my-imported-attr="PASS"></xsl:stylesheet>`,
+    },
     xml: `<?xml version="1.0"?>
         <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
         <page>
@@ -667,7 +919,7 @@ const testCases = [
         </page>
     `,
     xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
-        <xsl:import href="data:text/xml,&lt;xsl:stylesheet version='1.0' xmlns:xsl='http://www.w3.org/1999/XSL/Transform' my-imported-attr='PASS'&gt;&lt;/xsl:stylesheet&gt;"/>
+        <xsl:import href="./Import_Attribute_Merge_imported.xsl"/>
         <xsl:output method="html"/>
         <xsl:template match="/">
             <div style="color:green">
@@ -678,6 +930,9 @@ const testCases = [
   },
   {
     name: 'External document() call',
+    extraFiles: {
+      'External_document___call_ext.xml': '<root>PASS</root>',
+    },
     xml: `<?xml version="1.0"?>
         <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
         <page>
@@ -685,21 +940,15 @@ const testCases = [
             <message>INIT</message>
         </page>
     `,
-    get xsl() {
-      const xmlContent = '<root>PASS</root>';
-      const base64Content = Buffer.from(xmlContent).toString('base64');
-      const dataUri = `data:text/xml;base64,${base64Content}`;
-      return `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="html"/>
-        <!-- Use a base64 data URI to ensure valid URI syntax for libxml2 while triggering Asyncify suspension -->
-        <xsl:variable name="external" select="document('${dataUri}')"/>
+        <xsl:variable name="external" select="document('./External_document___call_ext.xml')"/>
         <xsl:template match="/">
             <div id="target" style="color:green">
                 <xsl:value-of select="$external/root"/>
             </div>
         </xsl:template>
-        </xsl:stylesheet>`;
-    },
+        </xsl:stylesheet>`,
   },
   {
     name: 'Uppercase Attributes',
@@ -1031,6 +1280,8 @@ const testCases = [
                     const style = window.getComputedStyle(tbl);
                     const style2 = window.getComputedStyle(tbl2);
                     const tdStyle = window.getComputedStyle(document.getElementById("td2"));
+                    // The output has no doctype, so (natively) it's in quirks mode, where
+                    // a stray li's marker is inside.
                     const liStyle = window.getComputedStyle(tbl2.querySelector("li"));
                     const widthPass = tbl.getAttribute("width") === "60%" &amp;&amp; tbl.offsetWidth > 35;
                     const spacingPass = style.borderSpacing === "10px" || style.borderSpacing === "10px 10px";
@@ -1052,6 +1303,1528 @@ const testCases = [
         </xsl:template>
     </xsl:stylesheet>`,
   },
+  {
+    name: 'Reset stylesheet does not override output styles',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html" doctype-system="about:legacy-compat"/>
+        <xsl:template match="/">
+            <html>
+            <head><style>body { font-family: monospace; font-size: 10px; }</style></head>
+            <body leftmargin="0" topmargin="0">
+                <div id="content">
+                    <table><tr><td id="td">cell</td><td id="top" valign="top">top<br/>x</td></tr></table>
+                    <div style="white-space: pre"><table><tr><td id="pre">a  b</td></tr></table></div>
+                    <li id="li">stray<ul><li id="nestedli">nested</li></ul></li>
+                </div>
+                <div id="target" style="color:red; font: initial">INIT</div>
+                <script>
+                    const cs = (el) => window.getComputedStyle(el);
+                    const td = cs(document.getElementById('td'));
+                    const results = {
+                        bodyMargin: cs(document.body).marginLeft + ' ' + cs(document.body).marginTop,
+                        tdFont: td.fontFamily + ' ' + td.fontSize,
+                        tdValign: td.verticalAlign,
+                        valignTop: cs(document.getElementById('top')).verticalAlign,
+                        preInTable: cs(document.getElementById('pre')).whiteSpace,
+                        strayLi: cs(document.getElementById('li')).listStylePosition,
+                        nestedLi: cs(document.getElementById('nestedli')).listStylePosition,
+                    };
+                    const expected = {
+                        bodyMargin: '0px 0px',
+                        tdFont: 'monospace 10px',
+                        tdValign: 'middle',
+                        valignTop: 'top',
+                        preInTable: 'pre',
+                        strayLi: 'outside',
+                        nestedLi: 'outside',
+                    };
+                    const failures = Object.keys(expected).filter((k) => results[k] !== expected[k]);
+                    document.getElementById('content').remove();
+                    // Restore the default body margin, so the result lines up with other tests.
+                    document.body.removeAttribute('leftmargin');
+                    document.body.removeAttribute('topmargin');
+                    const target = document.getElementById('target');
+                    if (failures.length === 0) {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + failures.map((k) => k + '=' + results[k]).join(', ');
+                    }
+                </script>
+            </body>
+            </html>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Quirks mode table and list styles for output without a doctype',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html>
+            <head><style>body { font-family: cursive; font-size: 10px; font-weight: bold; }</style></head>
+            <body>
+                <div id="content">
+                    <div style="text-align: center"><table><tr><td id="td">cell</td></tr></table></div>
+                    <div style="white-space: pre"><table><tr><td id="pre">a  b</td></tr></table></div>
+                    <table><tr><td><li id="li">stray<ul><li id="nestedli">nested</li></ul></li></td></tr></table>
+                    <ul><li id="listli">in a list</li></ul>
+                </div>
+                <div id="target" style="color:red; font: initial">INIT</div>
+                <script>
+                    // The output has no doctype, so natively it's in quirks mode, where
+                    // tables don't inherit font size, weight, white-space or
+                    // text-align, and a stray li's marker is inside.
+                    const cs = (el) => window.getComputedStyle(el);
+                    const td = cs(document.getElementById('td'));
+                    const results = {
+                        tdFont: td.fontFamily + ' ' + td.fontSize + ' ' + td.fontWeight,
+                        tdTextAlign: td.textAlign,
+                        preInTable: cs(document.getElementById('pre')).whiteSpace,
+                        strayLi: cs(document.getElementById('li')).listStylePosition,
+                        nestedLi: cs(document.getElementById('nestedli')).listStylePosition,
+                        listLi: cs(document.getElementById('listli')).listStylePosition,
+                    };
+                    const expected = {
+                        tdFont: 'cursive 16px 400',
+                        tdTextAlign: 'start',
+                        preInTable: 'normal',
+                        strayLi: 'inside',
+                        nestedLi: 'outside',
+                        listLi: 'outside',
+                    };
+                    const failures = Object.keys(expected).filter((k) => results[k] !== expected[k]);
+                    document.getElementById('content').remove();
+                    const target = document.getElementById('target');
+                    if (failures.length === 0) {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + failures.map((k) => k + '=' + results[k]).join(', ');
+                    }
+                </script>
+            </body>
+            </html>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'No trailing newline in HTML output',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        window.onload = () => {
+            const xml = \`<doc/>\`;
+            const xsl = \`<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
+                <xsl:output method="html"/>
+                <xsl:template match="/">test</xsl:template>
+                </xsl:stylesheet>\`;
+            ${UTILITIES}
+            const {xsltProcessor,xmlDoc} = initProcessor(xml,xsl);
+            const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+            const serialized = new XMLSerializer().serializeToString(fragment);
+            const passed = serialized === 'test';
+            setResult(passed, passed ? '' : 'Expected "test", got ' + JSON.stringify(serialized));
+        };
+        </script>
+        </body>`,
+  },
+  {
+    name: 'tagName and nodeName case preservation without namespace',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const elNull = document.createElementNS(null, 'customTag');
+                    const elEmpty = document.createElementNS('', 'anotherTag');
+                    const div = document.createElement('div');
+                    const target = document.getElementById("target");
+                    const p1 = elNull.tagName === 'customTag';
+                    const p2 = elNull.nodeName === 'customTag';
+                    const p3 = elEmpty.tagName === 'anotherTag';
+                    const p4 = elEmpty.nodeName === 'anotherTag';
+                    const p5 = div.tagName === 'DIV';
+                    const p6 = div.nodeName === 'DIV';
+                    if (p1 &amp;&amp; p2 &amp;&amp; p3 &amp;&amp; p4 &amp;&amp; p5 &amp;&amp; p6) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: p1=' + p1 + ', p2=' + p2 + ', p3=' + p3 + ', p4=' + p4 + ', p5=' + p5 + ', p6=' + p6;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'tagName uppercase for elements adopted into template contents',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    // Appending an element into template.content adopts it into a
+                    // separate "template contents owner document" (per the HTML spec),
+                    // so its ownerDocument is no longer the polyfilled document. The
+                    // tagName/nodeName uppercasing must still apply based on namespace
+                    // alone, not on document identity, so this must keep working.
+                    const div = document.createElement('template').content
+                        .appendChild(document.createElement('div'));
+                    const target = document.getElementById("target");
+                    const p1 = div.tagName === 'DIV';
+                    const p2 = div.nodeName === 'DIV';
+                    if (p1 &amp;&amp; p2) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: p1=' + p1 + ', p2=' + p2;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Template element innerHTML in XML document',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const tmpl = document.createElement('template');
+                    tmpl.innerHTML = '&lt;span class="template-child"&gt;Hello Template&lt;/span&gt;';
+                    const target = document.getElementById("target");
+                    const hasContent = tmpl.content &amp;&amp; tmpl.content.childNodes.length === 1;
+                    const childNodesEmpty = tmpl.childNodes.length === 0;
+                    const span = tmpl.content ? tmpl.content.querySelector('.template-child') : null;
+                    const textCorrect = span &amp;&amp; span.textContent === 'Hello Template';
+                    const innerHtmlCorrect = tmpl.innerHTML === '&lt;span class="template-child"&gt;Hello Template&lt;/span&gt;';
+                    if (hasContent &amp;&amp; childNodesEmpty &amp;&amp; textCorrect &amp;&amp; innerHtmlCorrect) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: hasContent=' + hasContent + ', childNodesEmpty=' + childNodesEmpty + ', textCorrect=' + textCorrect + ', innerHtmlCorrect=' + innerHtmlCorrect;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Foreign content innerHTML outerHTML and insertAdjacentHTML',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const svgns = 'http://www.w3.org/2000/svg';
+                    const svg = document.createElementNS(svgns, 'svg');
+                    document.body.appendChild(svg);
+                    svg.innerHTML = '&lt;circle cx="10" cy="10" r="5"&gt;&lt;/circle&gt;';
+                    const circle = svg.firstElementChild;
+                    const p1 = circle &amp;&amp; circle.namespaceURI === svgns &amp;&amp; circle.localName === 'circle';
+
+                    const g = document.createElementNS(svgns, 'g');
+                    svg.appendChild(g);
+                    g.outerHTML = '&lt;rect width="20" height="20"&gt;&lt;/rect&gt;';
+                    const rect = svg.querySelector('rect');
+                    const p2 = rect &amp;&amp; rect.namespaceURI === svgns &amp;&amp; rect.localName === 'rect';
+
+                    rect.insertAdjacentHTML('afterend', '&lt;line x1="0" y1="0" x2="10" y2="10"&gt;&lt;/line&gt;');
+                    const line = svg.querySelector('line');
+                    const p3 = line &amp;&amp; line.namespaceURI === svgns &amp;&amp; line.localName === 'line';
+
+                    const target = document.getElementById("target");
+                    if (p1 &amp;&amp; p2 &amp;&amp; p3) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: p1=' + p1 + ', p2=' + p2 + ', p3=' + p3;
+                    }
+                    svg.remove();
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Element innerHTML getter HTML serialization',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const target = document.getElementById("target");
+                    const container = document.createElement('div');
+                    container.innerHTML = '&lt;p&gt;Line 1&lt;br&gt;Line 2&lt;/p&gt;';
+                    const html = container.innerHTML;
+                    const p1 = html.includes('&lt;br&gt;') &amp;&amp; !html.includes('&lt;br/&gt;');
+
+                    const container2 = document.createElement('div');
+                    container2.textContent = 'valid in html ' + String.fromCharCode(12) + ' not in xml';
+                    let p2 = false;
+                    try {
+                        const s = container2.innerHTML;
+                        p2 = s.includes('valid in html');
+                    } catch (e) {
+                        p2 = false;
+                    }
+                    if (p1 &amp;&amp; p2) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: p1=' + p1 + ' (html=' + html + '), p2=' + p2;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'innerHTML getter keeps XML serialization outside HTML elements of the polyfilled document',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const target = document.getElementById("target");
+                    // Elements of other XML documents keep XML serialization.
+                    const other = new DOMParser().parseFromString('&lt;x&gt;&lt;br/&gt;&lt;/x&gt;', 'application/xml');
+                    const otherHtml = other.documentElement.innerHTML;
+                    const p1 = otherHtml === '&lt;br/&gt;';
+                    // Text in a non-HTML element named like a raw text element stays escaped.
+                    const s = document.createElementNS(null, 'script');
+                    s.textContent = 'a&lt;b';
+                    // (Split, so the expected value has no entity in the script text.)
+                    const p2 = s.innerHTML === 'a&amp;' + 'lt;b';
+                    if (p1 &amp;&amp; p2) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: p1=' + p1 + ' (' + otherHtml + '), p2=' + p2 + ' (' + s.innerHTML + ')';
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'outerHTML setter on disconnected elements throws',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const target = document.getElementById("target");
+                    const el = document.createElement('div');
+                    let threw = false;
+                    let errorName = '';
+                    try {
+                        el.outerHTML = '&lt;span&gt;test&lt;/span&gt;';
+                    } catch (e) {
+                        threw = true;
+                        errorName = e.name;
+                    }
+                    const p1 = threw &amp;&amp; errorName === 'NoModificationAllowedError';
+                    if (p1) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: threw=' + threw + ', errorName=' + errorName;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'compileImports deduplicates top-level variables',
+    extraFiles: {
+      'compileImports_deduplicates_top_level_variables_imported.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:variable name="dupVar">IMPORTED</xsl:variable>
+        <xsl:variable name="uniqueImportedVar">FROM_IMPORT</xsl:variable>
+      </xsl:stylesheet>`,
+    },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="./compileImports_deduplicates_top_level_variables_imported.xsl"/>
+        <xsl:variable name="dupVar">MAIN</xsl:variable>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const val = "<xsl:value-of select="$dupVar"/>";
+                    const importedVal = "<xsl:value-of select="$uniqueImportedVar"/>";
+                    const target = document.getElementById("target");
+                    if (val === "MAIN" &amp;&amp; importedVal === "FROM_IMPORT") {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = "FAIL: got dupVar=" + val + ", uniqueImportedVar=" + importedVal;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'compileImports skips parsererror documents',
+    extraFiles: {
+      'compileImports_skips_parsererror_documents_broken.xsl': `<broken-xml-not-closed>`,
+    },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="./compileImports_skips_parsererror_documents_broken.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const target = document.getElementById("target");
+                    target.style.color = "green";
+                    target.textContent = "PASS";
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Parameters passed to imported named template',
+    extraFiles: {
+      'Parameters_passed_to_imported_named_template_imported.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:template name="imported-template">
+            <xsl:param name="myParam" select="'DEFAULT'"/>
+            <xsl:choose>
+              <xsl:when test="$myParam = 'PASS'">
+                <div id="target" style="color:green">PASS</div>
+              </xsl:when>
+              <xsl:otherwise>
+                <div id="target" style="color:red">FAIL: got <xsl:value-of select="$myParam"/></div>
+              </xsl:otherwise>
+            </xsl:choose>
+          </xsl:template>
+        </xsl:stylesheet>`,
+      'Parameters_passed_to_imported_named_template_included.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:import href="./Parameters_passed_to_imported_named_template_imported.xsl"/>
+        </xsl:stylesheet>`,
+    },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:include href="./Parameters_passed_to_imported_named_template_included.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <xsl:call-template name="imported-template">
+                    <xsl:with-param name="myParam" select="'PASS'"/>
+                </xsl:call-template>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    // Templates in the importing stylesheet have higher import precedence
+    // than same-named/same-pattern templates in an imported stylesheet, so
+    // overriding them is legal.
+    name: 'Imported templates overridden by importing stylesheet',
+    extraFiles: {
+      'Imported_templates_overridden_by_importing_stylesheet_imported.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:template name="overridden">FAIL_IMPORTED_NAMED</xsl:template>
+          <xsl:template match="message">FAIL_IMPORTED_MATCH</xsl:template>
+          <xsl:template match="message" mode="base">BASE</xsl:template>
+        </xsl:stylesheet>`,
+    },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="./Imported_templates_overridden_by_importing_stylesheet_imported.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template name="overridden">NAMED</xsl:template>
+        <xsl:template match="message">MATCH</xsl:template>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const result = "<xsl:call-template name="overridden"/>,<xsl:apply-templates select="document/message"/>,<xsl:apply-templates select="document/message" mode="base"/>";
+                    const target = document.getElementById("target");
+                    if (result === "NAMED,MATCH,BASE") {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = "FAIL: got " + result;
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Nested imports that fail to load are skipped',
+    extraFiles: {
+      'Nested_imports_that_fail_to_load_are_skipped_imported.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:import href="./Nested_imports_that_fail_to_load_are_skipped_broken.xsl"/>
+          <xsl:import href="./Nested_imports_that_fail_to_load_are_skipped_missing.xsl"/>
+          <xsl:template name="nested">PASS</xsl:template>
+        </xsl:stylesheet>`,
+      'Nested_imports_that_fail_to_load_are_skipped_broken.xsl': `<broken-xml-not-closed>`,
+    },
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="./Nested_imports_that_fail_to_load_are_skipped_imported.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:green"><xsl:call-template name="nested"/></div>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'showError handles unescaped characters in message',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    let threwSyntaxError = false;
+                    let threwExpectedError = false;
+                    const testMsg = "Error: &lt;special&gt; &amp; 'unescaped' chars";
+                    try {
+                        window.showError(testMsg);
+                    } catch (e) {
+                        threwSyntaxError = e.name === 'SyntaxError';
+                        threwExpectedError = (e instanceof Error) &amp;&amp; !threwSyntaxError;
+                    }
+                    const textPassed = document.documentElement.textContent.includes(testMsg);
+                    const passed = threwExpectedError &amp;&amp; !threwSyntaxError &amp;&amp; textPassed;
+                    const target = document.createElement('div');
+                    target.id = 'target';
+                    if (passed) {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.style.color = 'red';
+                        target.textContent = 'FAIL: threwExpected=' + threwExpectedError + ', threwSyntax=' + threwSyntaxError + ', textPassed=' + textPassed;
+                    }
+                    const body = document.createElement('body');
+                    body.appendChild(target);
+                    document.documentElement.replaceChildren(body);
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-UTF-8 xsl:output encoding',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        ${UTILITIES}
+        window.onload = () => {
+            // The encoding attribute of xsl:output only matters when the result
+            // is serialized to bytes. XSLTProcessor returns DOM nodes, so the
+            // result text must not be re-encoded into (and mangled by) that
+            // encoding.
+            const hebrew = '\\u05E9\\u05DC\\u05D5\\u05DD';
+            const expectedText = '\\u00B7' + hebrew;
+            const xml = '<root><item name="' + hebrew + '">' + hebrew + '</item></root>';
+            const failures = [];
+            const check = (label, el, hasTitle) => {
+                const text = el?.textContent;
+                const title = hasTitle ? el?.getAttribute('title') : null;
+                if (text !== expectedText || (hasTitle && title !== hebrew)) {
+                    failures.push(label + ': text=' + JSON.stringify(text) +
+                        (hasTitle ? ', title=' + JSON.stringify(title) : ''));
+                }
+            };
+            for (const method of ['xml', 'html', 'text']) {
+                const xsl = \`<?xml version="1.0" encoding="windows-1255"?>
+                    <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                    <xsl:output method="\${method}" encoding="windows-1255"/>
+                    <xsl:template match="/">
+                        <div title="{root/item/@name}">&#183;<xsl:value-of select="root/item"/></div>
+                    </xsl:template>
+                    </xsl:stylesheet>\`;
+                const {xsltProcessor, xmlDoc} = initProcessor(xml, xsl);
+                const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+                const doc = xsltProcessor.transformToDocument(xmlDoc);
+                if (method === 'text') {
+                    check(method + ' fragment', fragment, false);
+                    check(method + ' document', doc.querySelector('pre'), false);
+                } else {
+                    check(method + ' fragment', fragment.querySelector('div'), true);
+                    check(method + ' document', doc.querySelector('div'), true);
+                }
+            }
+            setResult(failures.length === 0, failures.join('; '));
+        };
+        </script>
+        </body>`,
+  },
+  {
+    name: 'transformToFragment with HTML DOCTYPE',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        ${UTILITIES}
+        window.onload = () => {
+            const xml = \`<?xml version="1.0" encoding="utf-8"?>
+                <page>PASS</page>\`;
+            const xsl = \`<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                <xsl:output method="html" doctype-system="about:legacy-compat"/>
+                <xsl:template match="/">
+                    <div><xsl:value-of select="/page"/></div>
+                </xsl:template>
+                </xsl:stylesheet>\`;
+            const {xsltProcessor, xmlDoc} = initProcessor(xml, xsl);
+            const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+            const hasDoctype = Array.from(fragment.childNodes).some(
+                (n) => n.nodeType === Node.DOCUMENT_TYPE_NODE
+            );
+            setResult(
+                !hasDoctype && toFlatString(fragment) === '<div>PASS</div>',
+                'fragment=' + toFlatString(fragment)
+            );
+        };
+        </script>
+        </body>`,
+  },
+  {
+    name: 'Named forms exposed on document',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <form name="loginForm" style="display:none">
+                    <input type="text" name="username" value="admin"/>
+                </form>
+                <script>
+                    const inlineAvailable = document.loginForm instanceof HTMLFormElement &amp;&amp;
+                        document.loginForm.username.value === 'admin';
+                    document.addEventListener('DOMContentLoaded', () => {
+                        const dclAvailable = document.loginForm instanceof HTMLFormElement &amp;&amp;
+                            document.loginForm.username.value === 'admin';
+                        const target = document.getElementById('target');
+                        if (inlineAvailable &amp;&amp; dclAvailable) {
+                            target.style.color = 'green';
+                            target.textContent = 'PASS';
+                        } else {
+                            target.style.color = 'red';
+                            target.textContent = 'FAIL: inline=' + inlineAvailable + ', dcl=' + dclAvailable;
+                        }
+                    });
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'transformToFragment XML output in an XHTML document',
+    xhtml: `<?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head>
+            {{SCRIPT_INJECTION_LOCATION}}
+        </head>
+        <body>
+            <div id="target" style="color:red">INIT</div>
+            <script>
+            //<![CDATA[
+            (async () => {
+                if (window.xsltPolyfillReady) await window.xsltPolyfillReady();
+                const target = document.getElementById('target');
+                const xsl = new DOMParser().parseFromString('<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"><xsl:output method="xml"/><xsl:template match="/"><p>hi</p></xsl:template></xsl:stylesheet>', 'application/xml');
+                const processor = new XSLTProcessor();
+                processor.importStylesheet(xsl);
+                const fragment = processor.transformToFragment(new DOMParser().parseFromString('<x/>', 'application/xml'), document);
+                const el = fragment.firstElementChild;
+                // In an XML document (including XHTML), unprefixed elements in XML output have no namespace.
+                if (el && el.localName === 'p' && el.namespaceURI === null) {
+                    target.style.color = 'green';
+                    target.textContent = 'PASS';
+                } else {
+                    target.textContent = 'FAIL: ' + (el ? el.localName + ' in ' + el.namespaceURI : 'no element');
+                }
+            })();
+            //]]>
+            </script>
+        </body>
+        </html>`,
+  },
+  {
+    name: 'Script text does not double-decode entities',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <root>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <name>&amp;quot;;window.injected=1;//</name>
+        </root>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html>
+                <body>
+                    <div id="target" style="color:red">INIT</div>
+                    <script>
+                        window.injected = 0;
+                        window.got = "<xsl:value-of select="translate(root/name, '&quot;', '')"/>";
+                        const target = document.getElementById('target');
+                        const expected = '&amp;' + 'quot;;window.injected=1;//';
+                        // Also check that &amp;amp; in the stylesheet stays &amp;amp; and is not decoded to &amp;.
+                        const literalEntity = "&amp;amp;";
+                        const expectedLiteral = '&amp;' + 'amp;';
+                        if (window.injected === 0 &amp;&amp; window.got === expected &amp;&amp; literalEntity === expectedLiteral) {
+                            target.style.color = 'green';
+                            target.textContent = 'PASS';
+                        } else {
+                            target.style.color = 'red';
+                            target.textContent = 'FAIL: injected=' + window.injected + ', got=' + window.got + ', literal=' + literalEntity;
+                        }
+                    </script>
+                </body>
+            </html>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Script with child elements preserves raw text',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <root>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <name>&amp;quot;;window.injected=1;//</name>
+        </root>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html>
+                <body>
+                    <div id="target" style="color:red">INIT</div>
+                    <script>
+                        window.injected = 0;
+                        const markup = \`<div class="legend-item"><span>\${1 &amp;&amp; 2}</span></div>\`;
+                        window.got = "<xsl:value-of select="translate(root/name, '&quot;', '')"/>";
+                        const target = document.getElementById('target');
+                        const expected = '&amp;' + 'quot;;window.injected=1;//';
+                        let sum = 0;
+                        for (let i = 0; i &lt; 3; i++) {
+                            sum += i;
+                        }
+                        if (window.injected === 0 &amp;&amp; window.got === expected &amp;&amp; sum === 3 &amp;&amp; markup.includes('<span>2</span>')) {
+                            target.style.color = 'green';
+                            target.textContent = 'PASS';
+                        } else {
+                            target.style.color = 'red';
+                            target.textContent = 'FAIL: injected=' + window.injected + ', got=' + window.got + ', sum=' + sum + ', markup=' + markup;
+                        }
+                    </script>
+                </body>
+            </html>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-prolog xml-stylesheet ignored',
+    extraFiles: {
+      'Non_prolog_xml_stylesheet_ignored_evil.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+          <html><body>
+            <div id="target" style="color:red">FAIL: non-prolog stylesheet applied</div>
+            <script>window.stylesheetExecuted = true;</script>
+          </body></html>
+        </xsl:template>
+      </xsl:stylesheet>`,
+    },
+    get xhtml() {
+      const evilHref = './Non_prolog_xml_stylesheet_ignored_evil.xsl';
+      return `<?xml version="1.0" encoding="UTF-8"?>
+        <!-- <?xml-stylesheet type="text/xsl" href="${evilHref}"?> -->
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head>
+            {{SCRIPT_INJECTION_LOCATION}}
+        </head>
+        <body>
+            <?xml-stylesheet type="text/xsl" href="${evilHref}"?>
+            <div style="display:none"><![CDATA[<?xml-stylesheet type="text/xsl" href="${evilHref}"?>]]></div>
+            <div id="target" style="color:red">INIT</div>
+            <script>
+            //<![CDATA[
+            window.addEventListener('DOMContentLoaded', async () => {
+                const href = "${evilHref}";
+                const cases = [
+                    '<?xml version="1.0"?><rss><channel><title><![CDATA[<?xml-stylesheet type="text/xsl" href="' + href + '"?>]]]]><![CDATA[></title></channel></rss>',
+                    '<?xml version="1.0"?><!-- <?xml-stylesheet type="text/xsl" href="' + href + '"?> --><rss><channel><title>feed</title></channel></rss>',
+                    '<?xml version="1.0"?><rss><channel><title><?xml-stylesheet type="text/xsl" href="' + href + '"?></title></channel></rss>',
+                    '<?xml version="1.0"?><rss><channel><title>feed</title></channel></rss><?xml-stylesheet type="text/xsl" href="' + href + '"?>',
+                ];
+                if (window.xsltPolyfillReady) {
+                    await window.xsltPolyfillReady();
+                    for (const xml of cases) {
+                        await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(xml), location.href);
+                    }
+                }
+                const target = document.getElementById('target');
+                if (target && !window.stylesheetExecuted) {
+                    target.style.color = 'green';
+                    target.textContent = 'PASS';
+                }
+            }, { once: true });
+            //]]>
+            </script>
+        </body>
+        </html>
+        <?xml-stylesheet type="text/xsl" href="${evilHref}"?>`;
+    },
+  },
+  {
+    name: 'xml-stylesheet with type text/xml',
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xml" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <div id="target" style="color:green">PASS</div>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'xml-stylesheet with type application/xml',
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="application/xml" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <div id="target" style="color:green">PASS</div>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'xml-stylesheet href with character references',
+    extraFiles: {
+      'xml_stylesheet_href_with_character_references.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <div id="target" style="color:green">PASS</div>
+        </xsl:template>
+      </xsl:stylesheet>`,
+    },
+    // Browsers decode character references in the href pseudo-attribute
+    // (&#99; is "c" and &#x72; is "r"), like SmartCrawl sitemaps' "&#038;".
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="./xml_stylesheet_href_with_&#99;haracter_&#x72;eferences.xsl"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+  },
+  {
+    name: 'xml-stylesheet with alternate=yes is skipped',
+    extraFiles: {
+      'xml_stylesheet_with_alternate_yes_is_skipped_alt.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <div id="target" style="color:red">FAIL: alternate stylesheet applied</div>
+        </xsl:template>
+      </xsl:stylesheet>`,
+    },
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="./xml_stylesheet_with_alternate_yes_is_skipped_alt.xsl" alternate="yes"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <div id="target" style="color:green">PASS</div>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'libxslt warnings and xsl:message are not logged on success',
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <page>
+            <script xmlns="http://www.w3.org/1999/xhtml">
+                window.loggedMessages = [];
+                for (const level of ['error', 'warn']) {
+                    const original = console[level];
+                    console[level] = function (...args) {
+                        window.loggedMessages.push(level + ': ' + args.join(' '));
+                        return original.apply(this, args);
+                    };
+                }
+            </script>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="2.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <xsl:message>message from xsl:message</xsl:message>
+            <html><body>
+                <div id="target" style="color:red">INIT</div>
+                <script>
+                    const target = document.getElementById('target');
+                    const logged = (window.loggedMessages || []).slice();
+                    let failureLogged = true;
+                    if (window.xsltPolyfillVersion) {
+                        // A failing transformation should still log its messages.
+                        const parser = new DOMParser();
+                        const xsl = parser.parseFromString('&lt;xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"&gt;' +
+                            '&lt;xsl:template match="/"&gt;&lt;xsl:message terminate="yes"&gt;terminating message&lt;/xsl:message&gt;&lt;/xsl:template&gt;' +
+                            '&lt;/xsl:stylesheet&gt;', 'application/xml');
+                        const processor = new XSLTProcessor();
+                        processor.importStylesheet(xsl);
+                        try {
+                            processor.transformToFragment(parser.parseFromString('&lt;root/&gt;', 'application/xml'), document);
+                        } catch (e) {}
+                        failureLogged = window.loggedMessages.some((m) => m.includes('terminating message'));
+                    }
+                    if (logged.length === 0 &amp;&amp; failureLogged) {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: failureLogged=' + failureLogged + ', logged on success: ' + logged.join(' | ');
+                    }
+                </script>
+            </body></html>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-UTF-8 stylesheet imported with xsl:import',
+    extraFiles: {
+      // ISO-8859-1, so "\u00fc" and "\u00df" are the single bytes 0xFC and 0xDF.
+      'Non_UTF_8_stylesheet_imported_with_xsl_import_latin1.xsl': Buffer.from(
+        `<?xml version="1.0" encoding="ISO-8859-1"?>
+        <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:template name="imported-text">Gr\u00fc\u00dfe</xsl:template>
+        </xsl:stylesheet>`,
+        'latin1',
+      ),
+    },
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="./Non_UTF_8_stylesheet_imported_with_xsl_import_latin1.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html><body>
+                <div id="target" style="color:red">INIT</div>
+                <div id="text" style="display:none"><xsl:call-template name="imported-text"/></div>
+                <script>
+                    const text = document.getElementById('text').textContent;
+                    const target = document.getElementById('target');
+                    if (text === 'Gr\\u00fc\\u00dfe') {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + escape(text);
+                    }
+                </script>
+            </body></html>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-UTF-8 stylesheet included with xsl:include',
+    extraFiles: {
+      // UTF-16LE, with a BOM.
+      'Non_UTF_8_stylesheet_included_with_xsl_include_utf16.xsl': Buffer.from(
+        `\ufeff<?xml version="1.0" encoding="UTF-16"?>
+        <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+          <xsl:template name="included-text">Gr\u00fc\u00dfe</xsl:template>
+        </xsl:stylesheet>`,
+        'utf16le',
+      ),
+    },
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:include href="./Non_UTF_8_stylesheet_included_with_xsl_include_utf16.xsl"/>
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html><body>
+                <div id="target" style="color:red">INIT</div>
+                <div id="text" style="display:none"><xsl:call-template name="included-text"/></div>
+                <script>
+                    const text = document.getElementById('text').textContent;
+                    const target = document.getElementById('target');
+                    if (text === 'Gr\\u00fc\\u00dfe') {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + escape(text);
+                    }
+                </script>
+            </body></html>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-UTF-8 document loaded with document()',
+    extraFiles: {
+      // windows-1251, so the Cyrillic text is the bytes 0xCF 0xF0 0xE8 0xE2 0xE5 0xF2.
+      'Non_UTF_8_document_loaded_with_document___cp1251.xml': Buffer.concat([
+        Buffer.from('<?xml version="1.0" encoding="windows-1251"?>\n<root>'),
+        Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]),
+        Buffer.from('</root>'),
+      ]),
+    },
+    xml: `<?xml version="1.0"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <page>
+            {{SCRIPT_INJECTION_LOCATION}}
+            <message>INIT</message>
+        </page>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:variable name="doc" select="document('./Non_UTF_8_document_loaded_with_document___cp1251.xml')"/>
+        <xsl:template match="/">
+            <html><body>
+                <div id="target" style="color:red">INIT</div>
+                <div id="text" style="display:none"><xsl:value-of select="$doc/root"/></div>
+                <script>
+                    const text = document.getElementById('text').textContent;
+                    const target = document.getElementById('target');
+                    if (text === '\\u041f\\u0440\\u0438\\u0432\\u0435\\u0442') {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + escape(text);
+                    }
+                </script>
+            </body></html>
+        </xsl:template>
+        </xsl:stylesheet>`,
+  },
+  {
+    name: 'Non-UTF-8 document loaded with loadXmlWithXsltFromUrl',
+    extraFiles: {
+      // windows-1251, so the Cyrillic text is the bytes 0xCF 0xF0 0xE8 0xE2 0xE5 0xF2.
+      'Non_UTF_8_document_loaded_with_loadXmlWithXsltFromUrl_cp1251.xml': Buffer.concat([
+        Buffer.from(
+          '<?xml version="1.0" encoding="windows-1251"?>\n' +
+            '<?xml-stylesheet type="text/xsl" href="./Non_UTF_8_document_loaded_with_loadXmlWithXsltFromUrl.xsl"?>\n<root>',
+        ),
+        Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]),
+        Buffer.from('</root>'),
+      ]),
+      'Non_UTF_8_document_loaded_with_loadXmlWithXsltFromUrl.xsl': `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <html><body>
+                <div id="target" style="color:red">INIT</div>
+                <div id="text" style="display:none"><xsl:value-of select="/root"/></div>
+                <script>
+                    const text = document.getElementById('text').textContent;
+                    const target = document.getElementById('target');
+                    if (text === '\\u041f\\u0440\\u0438\\u0432\\u0435\\u0442') {
+                        target.style.color = 'green';
+                        target.textContent = 'PASS';
+                    } else {
+                        target.textContent = 'FAIL: ' + escape(text);
+                    }
+                </script>
+            </body></html>
+        </xsl:template>
+      </xsl:stylesheet>`,
+    },
+    html: `
+        <!DOCTYPE html>
+        <body>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target" style="color:red">INIT</div>
+        <script>
+        // Use { once: true }: the polyfill fires a synthetic load event after
+        // replacing the document, which mustn't start another transformation.
+        window.addEventListener('load', () => {
+            ${UTILITIES}
+            if (!window.loadXmlWithXsltFromUrl) {
+                // This is a polyfill API; there's nothing to test natively.
+                return setResult(true);
+            }
+            window.loadXmlWithXsltFromUrl('./Non_UTF_8_document_loaded_with_loadXmlWithXsltFromUrl_cp1251.xml')
+                .catch((e) => {
+                    // On failure, the polyfill replaces the document's content with the error.
+                    document.documentElement.textContent = 'FAIL: ' + e;
+                });
+        }, { once: true });
+        </script>`,
+  },
+  {
+    name: 'Reject cross-origin and data URLs',
+    get extraFiles() {
+      const evilXsl = `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+          <html><body>
+            <div id="target" style="color:red">FAIL: disallowed stylesheet applied</div>
+            <script>window.disallowedStylesheetExecuted = true;</script>
+          </body></html>
+        </xsl:template>
+      </xsl:stylesheet>`;
+      const evilDataUri = `data:text/xml;base64,${Buffer.from(evilXsl).toString('base64')}`;
+
+      const dataImportXsl = `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:template match="import-check">LEAKED_DATA_IMPORT</xsl:template>
+      </xsl:stylesheet>`;
+      const dataImportUri = `data:text/xml;base64,${Buffer.from(dataImportXsl).toString('base64')}`;
+
+      const dataDocXml = `<secret>LEAKED_DATA_DOC</secret>`;
+      const dataDocUri = `data:text/xml;base64,${Buffer.from(dataDocXml).toString('base64')}`;
+
+      const includeDataXsl = `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:include href="${evilDataUri}"/>
+        <xsl:output method="html"/>
+      </xsl:stylesheet>`;
+
+      const hostXsl = `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:import href="${dataImportUri}"/>
+        <xsl:output method="html"/>
+        <xsl:variable name="dataDoc" select="document('${dataDocUri}')"/>
+        <xsl:variable name="crossDoc" select="document(/root/cross-doc)"/>
+        <xsl:variable name="sameDoc" select="document('./Reject_cross_origin_and_data_URLs_doc.xml')"/>
+        <xsl:template match="/">
+          <html><body>
+            <div id="result" style="display:none"
+                 data-import="{normalize-space(/root/import-check)}"
+                 data-doc="{normalize-space($dataDoc)}"
+                 cross-doc="{normalize-space($crossDoc)}"
+                 same-doc="{normalize-space($sameDoc)}">
+              <xsl:apply-templates select="/root/import-check"/>
+            </div>
+            <div id="target" style="color:red">INIT</div>
+          </body></html>
+        </xsl:template>
+      </xsl:stylesheet>`;
+
+      return {
+        'Reject_cross_origin_and_data_URLs_evil.xsl': evilXsl,
+        'Reject_cross_origin_and_data_URLs_include_data.xsl': includeDataXsl,
+        'Reject_cross_origin_and_data_URLs_host.xsl': hostXsl,
+        'Reject_cross_origin_and_data_URLs_doc.xml': '<secret>ALLOWED_DOC</secret>',
+      };
+    },
+    get xhtml() {
+      const evilXsl = `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+          <html><body>
+            <div id="target" style="color:red">FAIL: disallowed stylesheet applied</div>
+            <script>window.disallowedStylesheetExecuted = true;</script>
+          </body></html>
+        </xsl:template>
+      </xsl:stylesheet>`;
+      const evilDataUri = `data:text/xml;base64,${Buffer.from(evilXsl).toString('base64')}`;
+
+      return `<?xml version="1.0" encoding="UTF-8"?>
+        <html xmlns="http://www.w3.org/1999/xhtml">
+        <head>
+            {{SCRIPT_INJECTION_LOCATION}}
+        </head>
+        <body>
+            <div id="target" style="color:red">INIT</div>
+            <script>
+            //<![CDATA[
+            window.addEventListener('DOMContentLoaded', async () => {
+                if (!window.xsltPolyfillReady) {
+                    const target = document.getElementById('target');
+                    target.style.color = 'green';
+                    target.textContent = 'PASS';
+                    return;
+                }
+                await window.xsltPolyfillReady();
+
+                const crossOriginUrl = (rel) => {
+                    const u = new URL(rel, location.href);
+                    u.hostname = u.hostname === 'localhost' ? '127.0.0.1' : 'localhost';
+                    return u.href;
+                };
+
+                const failures = [];
+                const savedNodes = Array.from(document.documentElement.childNodes).map((n) => n.cloneNode(true));
+                const restoreDom = () => {
+                    document.documentElement.replaceChildren(...savedNodes.map((n) => n.cloneNode(true)));
+                };
+
+                // Track fetch() calls to ensure mode: 'same-origin' is always used.
+                const origFetch = window.fetch;
+                const fetchModes = [];
+                window.fetch = function(resource, init) {
+                    fetchModes.push({ url: String(resource), mode: init && init.mode });
+                    return origFetch.apply(this, arguments);
+                };
+
+                // 1. Reject data: URL in <?xml-stylesheet?>
+                const dataPiXml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="${evilDataUri}"?><root/>';
+                let dataPiThrew = false;
+                try {
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(dataPiXml), location.href);
+                } catch {
+                    dataPiThrew = true;
+                }
+                restoreDom();
+                if (!dataPiThrew || window.disallowedStylesheetExecuted) {
+                    failures.push('data: PI stylesheet was not rejected');
+                }
+
+                // 2. Reject cross-origin URL in <?xml-stylesheet?>
+                window.disallowedStylesheetExecuted = false;
+                const crossPiHref = crossOriginUrl('./Reject_cross_origin_and_data_URLs_evil.xsl');
+                const crossPiXml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="' + crossPiHref + '"?><root/>';
+                let crossPiThrew = false;
+                try {
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(crossPiXml), location.href);
+                } catch {
+                    crossPiThrew = true;
+                }
+                restoreDom();
+                if (!crossPiThrew || window.disallowedStylesheetExecuted) {
+                    failures.push('cross-origin PI stylesheet was not rejected');
+                }
+
+                // 3. Reject data: URL in <xsl:include>
+                window.disallowedStylesheetExecuted = false;
+                const includeDataXml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="./Reject_cross_origin_and_data_URLs_include_data.xsl"?><root/>';
+                let includeDataThrew = false;
+                try {
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(includeDataXml), location.href);
+                } catch {
+                    includeDataThrew = true;
+                }
+                restoreDom();
+                if (!includeDataThrew || window.disallowedStylesheetExecuted) {
+                    failures.push('data: xsl:include was not rejected');
+                }
+
+                // 4. Reject cross-origin URL in <xsl:include> and <xsl:import>
+                window.disallowedStylesheetExecuted = false;
+                const crossIncludeBlob = URL.createObjectURL(new Blob([
+                    '<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">' +
+                    '<xsl:include href="' + crossPiHref + '"/>' +
+                    '</xsl:stylesheet>'
+                ], { type: 'text/xml' }));
+                let crossIncludeThrew = false;
+                try {
+                    const xml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="' + crossIncludeBlob + '"?><root/>';
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(xml), location.href);
+                } catch {
+                    crossIncludeThrew = true;
+                }
+                URL.revokeObjectURL(crossIncludeBlob);
+                restoreDom();
+                if (!crossIncludeThrew || window.disallowedStylesheetExecuted) {
+                    failures.push('cross-origin xsl:include was not rejected');
+                }
+
+                window.disallowedStylesheetExecuted = false;
+                const crossImportBlob = URL.createObjectURL(new Blob([
+                    '<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">' +
+                    '<xsl:import href="' + crossPiHref + '"/>' +
+                    '<xsl:output method="html"/>' +
+                    '<xsl:template match="/"><html><body><div id="target" style="color:red">INIT</div></body></html></xsl:template>' +
+                    '</xsl:stylesheet>'
+                ], { type: 'text/xml' }));
+                try {
+                    const xml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="' + crossImportBlob + '"?><root/>';
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(xml), location.href);
+                } catch (e) {
+                    failures.push('cross-origin xsl:import threw: ' + e.message);
+                }
+                URL.revokeObjectURL(crossImportBlob);
+                restoreDom();
+                if (window.disallowedStylesheetExecuted) {
+                    failures.push('cross-origin xsl:import was not rejected');
+                }
+
+                // 5. Reject data: <xsl:import>, data: document(), and cross-origin document(), while allowing same-origin document()
+                fetchModes.length = 0;
+                const crossDocHref = crossOriginUrl('./Reject_cross_origin_and_data_URLs_doc.xml');
+                const hostXml = '<?xml version="1.0"?><?xml-stylesheet type="text/xsl" href="./Reject_cross_origin_and_data_URLs_host.xsl"?>' +
+                    '<root><import-check>SAFE_IMPORT</import-check><cross-doc>' + crossDocHref + '</cross-doc></root>';
+                try {
+                    await window.loadXmlWithXsltFromBytes(new TextEncoder().encode(hostXml), location.href);
+                    const resultEl = document.getElementById('result');
+                    if (!resultEl) {
+                        failures.push('host transform produced no #result');
+                    } else {
+                        const importText = resultEl.textContent.trim();
+                        const dataDoc = resultEl.getAttribute('data-doc');
+                        const crossDoc = resultEl.getAttribute('cross-doc');
+                        const sameDoc = resultEl.getAttribute('same-doc');
+                        if (importText !== 'SAFE_IMPORT') {
+                            failures.push('data: xsl:import applied: ' + importText);
+                        }
+                        if (dataDoc !== '') {
+                            failures.push('data: document() loaded: ' + dataDoc);
+                        }
+                        if (crossDoc !== '') {
+                            failures.push('cross-origin document() loaded: ' + crossDoc);
+                        }
+                        if (sameDoc !== 'ALLOWED_DOC') {
+                            failures.push('same-origin document() failed: ' + sameDoc);
+                        }
+                    }
+                } catch (e) {
+                    restoreDom();
+                    failures.push('host transform threw: ' + e.message);
+                }
+
+                if (fetchModes.length === 0 || fetchModes.some((f) => f.mode !== 'same-origin')) {
+                    failures.push('fetch called without mode="same-origin": ' + JSON.stringify(fetchModes));
+                }
+
+                window.fetch = origFetch;
+                const target = document.getElementById('target');
+                if (failures.length === 0) {
+                    target.style.color = 'green';
+                    target.textContent = 'PASS';
+                } else {
+                    target.style.color = 'red';
+                    target.textContent = 'FAIL: ' + failures.join('; ');
+                }
+            }, { once: true });
+            //]]>
+            </script>
+        </body>
+        </html>`;
+    },
+  },
+  {
+    name: 'Form controls named like DOM members in XSLT output',
+    xml: `<?xml version="1.0" encoding="UTF-8"?>
+        <?xml-stylesheet type="text/xsl" href="{{XSL_HREF}}"?>
+        <document>
+            {{SCRIPT_INJECTION_LOCATION}}
+            INIT
+        </document>`,
+    xsl: `<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/">
+            <body>
+                <div id="target" style="color:red">INIT</div>
+                <form id="f" style="display: none">
+                    <input name="getAttributeNames"/><input name="getAttribute"/><input name="setAttribute"/>
+                    <input name="removeAttribute"/><input name="querySelectorAll"/><input name="attributes"/>
+                    <input name="namespaceURI"/><input name="localName"/><input name="nodeType"/>
+                    <input name="firstChild"/><input name="childNodes"/><input name="parentNode"/>
+                    <input name="replaceChildren"/><input name="replaceWith"/><input name="remove"/>
+                    <input name="prepend"/><input name="append"/><input name="before"/><input name="after"/>
+                </form>
+                <script>
+                    // The polyfill must not break on these when it renders the output, or when
+                    // the page then uses innerHTML, insertAdjacentHTML and outerHTML on the form.
+                    const f = document.getElementById("f");
+                    const inputs = () => Element.prototype.querySelectorAll.call(f, "input");
+                    const p0 = inputs().length === 19;
+                    f.innerHTML = '&lt;input name="content"&gt;&lt;input name="childNodes"&gt;&lt;input name="localName"&gt;&lt;input name="namespaceURI"&gt;&lt;input name="nodeType"&gt;';
+                    const p1 = inputs().length === 5;
+                    const html = f.innerHTML;
+                    const p2 = typeof html === 'string' &amp;&amp; html.includes('name="childNodes"');
+                    f.insertAdjacentHTML('beforeend', '&lt;input name="append"&gt;');
+                    const p3 = inputs().length === 6;
+                    inputs()[5].outerHTML = '&lt;input name="before"&gt;&lt;input name="after"&gt;';
+                    const p4 = inputs().length === 7;
+                    const target = document.getElementById("target");
+                    if (p0 &amp;&amp; p1 &amp;&amp; p2 &amp;&amp; p3 &amp;&amp; p4) {
+                        target.style.color = "green";
+                        target.textContent = "PASS";
+                    } else {
+                        target.textContent = 'FAIL: ' + [p0, p1, p2, p3, p4].join();
+                    }
+                </script>
+            </body>
+        </xsl:template>
+    </xsl:stylesheet>`,
+  },
+  {
+    name: 'Named elements shadowing document properties in an HTML page',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        <embed name="createDocumentFragment"><embed name="createElementNS"><embed name="createComment">
+        <embed name="implementation"><embed name="documentElement"><embed name="contentType">
+        <embed name="readyState"><embed name="dispatchEvent">
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target">INIT</div>
+        <script>
+        window.onload = () => {
+            ${UTILITIES}
+            // Named elements shadow properties of the document; the polyfill, loaded after
+            // them, must still install and work.
+            const xml = \`<?xml version="1.0" encoding="utf-8"?><page>INIT</page>\`;
+            const xsl = \`<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                <xsl:output method="html"/>
+                <xsl:template match="/"><div>PASS</div></xsl:template>
+                </xsl:stylesheet>\`;
+            const {xsltProcessor,xmlDoc} = initProcessor(xml,xsl);
+            const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+            setResult(toFlatString(fragment) === '<div>PASS</div>');
+        };
+        </script>`,
+  },
+  {
+    name: 'Named elements matching option names in an HTML page',
+    html: `
+        <!DOCTYPE html>
+        <body>
+        <div style="display: none">
+        <iframe name="xsltPolyfillInstalled"></iframe><iframe name="xsltUsePolyfillOnlyIfNeeded"></iframe>
+        <iframe name="xsltDontAutoloadXmlDocs"></iframe><img id="xsltPolyfillOptions">
+        </div>
+        {{SCRIPT_INJECTION_LOCATION}}
+        <div id="target">INIT</div>
+        <script>
+        window.onload = () => {
+            ${UTILITIES}
+            // Named elements appear as window.xsltPolyfillInstalled etc.; the polyfill,
+            // loaded after them, must ignore them as options and still install.
+            const hasPolyfillScript = !!document.querySelector('script[src*="xslt-polyfill"]');
+            if (hasPolyfillScript && typeof window.xsltPolyfillReady !== 'function') {
+                return setResult(false, 'polyfill not installed');
+            }
+            if ('xsltUsePolyfillOnlyIfNeeded' in document.getElementById('xsltPolyfillOptions')) {
+                return setResult(false, 'img used as xsltPolyfillOptions');
+            }
+            const xml = \`<?xml version="1.0" encoding="utf-8"?><page>INIT</page>\`;
+            const xsl = \`<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+                <xsl:output method="html"/>
+                <xsl:template match="/"><div>PASS</div></xsl:template>
+                </xsl:stylesheet>\`;
+            const {xsltProcessor,xmlDoc} = initProcessor(xml,xsl);
+            const fragment = xsltProcessor.transformToFragment(xmlDoc, document);
+            setResult(toFlatString(fragment) === '<div>PASS</div>');
+        };
+        </script>`,
+  },
 ];
 
 const fs = require('fs');
@@ -1062,13 +2835,17 @@ if (!fs.existsSync(outputDir)) {
   fs.mkdirSync(outputDir);
 }
 
+// Appended to the URLs of the polyfill scripts and stylesheets in the generated
+// files, so that the browser doesn't use stale cached copies of them after the
+// test files are regenerated. (Servers often send no caching headers, so the
+// browser caches them heuristically.)
+const cacheBuster = `v=${Date.now()}`;
+
 const scriptInjections = {
   native: '',
-  source: `<script xmlns="http://www.w3.org/1999/xhtml">window.xsltUsePolyfillAlways = true;</script>
-    <script src="../../dist/xslt-wasm.js" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>
-    <script src="../../src/xslt-polyfill-src.js" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>`,
-  minified: `<script xmlns="http://www.w3.org/1999/xhtml">window.xsltUsePolyfillAlways = true;</script>
-    <script src="../../xslt-polyfill.min.js" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>`,
+  source: `<script src="../../dist/xslt-wasm.js?${cacheBuster}" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>
+    <script src="../../src/xslt-polyfill-src.js?${cacheBuster}" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>`,
+  minified: `<script src="../../xslt-polyfill.min.js?${cacheBuster}" xmlns="http://www.w3.org/1999/xhtml" charset="utf-8"></script>`,
 };
 
 const generatedTestCases = {};
@@ -1078,7 +2855,7 @@ testCases.forEach((testCase) => {
 
   if (!generatedTestCases[testCase.name]) {
     const testCaseEntry = { name: testCase.name };
-    ['xml', 'xsl', 'html'].forEach((ext) => {
+    ['xml', 'xsl', 'html', 'xhtml'].forEach((ext) => {
       if (testCase[ext]) {
         const fileName = `${baseName}_{{MODE}}.${ext}`;
         testCaseEntry[ext] = `generated/${fileName}`;
@@ -1087,11 +2864,20 @@ testCases.forEach((testCase) => {
     generatedTestCases[testCase.name] = testCaseEntry;
   }
 
+  if (testCase.extraFiles) {
+    Object.entries(testCase.extraFiles).forEach(([extraName, extraContent]) => {
+      const extraPath = path.join(outputDir, extraName);
+      // A Buffer is written as-is, e.g. for files in encodings other than UTF-8.
+      fs.writeFileSync(extraPath, Buffer.isBuffer(extraContent) ? extraContent : extraContent.trim());
+      console.log(`Generated ${extraPath}`);
+    });
+  }
+
   Object.keys(scriptInjections).forEach((type) => {
     const suffix = `_${type}`;
     const scriptInjection = scriptInjections[type];
 
-    ['xml', 'xsl', 'html'].forEach((ext) => {
+    ['xml', 'xsl', 'html', 'xhtml'].forEach((ext) => {
       if (testCase[ext]) {
         let content = testCase[ext];
         const fileName = `${baseName}${suffix}.${ext}`;
@@ -1101,7 +2887,7 @@ testCases.forEach((testCase) => {
 
         if (ext === 'xml' && testCase.xsl) {
           const xslFileName = `${baseName}${suffix}.xsl`;
-          content = content.replace('{{XSL_HREF}}', `./${xslFileName}`);
+          content = content.replace('{{XSL_HREF}}', `./${xslFileName}?${cacheBuster}`);
         }
 
         //This is a special case for the basic transform, which has a hard-coded XSLT href
